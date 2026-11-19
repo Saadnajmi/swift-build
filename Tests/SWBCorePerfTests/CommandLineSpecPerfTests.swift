@@ -92,9 +92,9 @@ private final class CapturingTaskGenerationDelegate: TaskGenerationDelegate {
     func createGateTask(inputs: [any PlannedNode], output: any PlannedNode, name: String?, mustPrecede: [any PlannedTask], taskConfiguration: (inout PlannedTaskBuilder) -> Void) {
         // Store somewhere if a test needs it.
     }
-    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: () -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable)
+    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: ((any TaskValidityCriteria)?) -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable)
     {
-        return sharedIntermediateNodes.getOrInsert(ident, creator)
+        return sharedIntermediateNodes.getOrInsert(ident) { creator(nil) }
     }
     func registerSharedPCHOrderingDependency(_ ident: String, orderingNode: any PlannedNode) {}
     func access(path: Path) {}

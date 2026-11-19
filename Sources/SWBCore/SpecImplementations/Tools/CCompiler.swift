@@ -1661,10 +1661,10 @@ public class ClangCompilerSpec : CompilerSpec, SpecIdentifierType, GCCCompatible
             // Construct an identifier from the command line arguments that should contribute to making the precomp unique.
             let (sharingIdentString, sharingIdentHashValue) = Self.sharedPrecompiledHeaderSharingIdentifier(commandLine: commandLineForHash)
 
-            // Look up any existing precomp node for the identifier, or create it if it’s the first time we see it.
+            // Look up any existing precomp node for the identifier, or create it if it’s the first time this target sees it.
             //
-            // FIXME: We need to be very careful here, we are still providing the build context for the current file, and the local scope. This means that the thing we compute here may depend on whatever target happens to produce it first, in subtle ways. We actually know this happens with the headermaps: <rdar://problem/24605739> [Swift Build] Stop sharing precompiled PCH files across targets
-            let (precompFile, pchInfoAny) = delegate.createOrReuseSharedNodeWithIdentifier(sharingIdentString) { () -> (any PlannedNode, any Sendable) in
+            // Each target that uses the precomp plans its own task to produce it, in its own build context and local scope, and the validity criteria keep only one of those tasks, chosen independently of the order in which targets are planned.  Otherwise the task would belong to whichever target happened to produce it first (we know its inputs depend on that target, for example), and its identifier, and so its build database record, would change from one plan to the next.  See also <rdar://problem/24605739> [Swift Build] Stop sharing precompiled PCH files across targets
+            let (precompFile, pchInfoAny) = delegate.createOrReuseSharedNodeWithIdentifier(sharingIdentString) { validityCriteria -> (any PlannedNode, any Sendable) in
                 // This block is invoked only when we need to create a task to precompile a header.
 
                 // Ordering gate: a workspace level task will wire together all sharing targets' startCompilingNode.
@@ -1675,7 +1675,7 @@ public class ClangCompilerSpec : CompilerSpec, SpecIdentifierType, GCCCompatible
                 let precompPath = baseCachePath.join("SharedPrecompiledHeaders").join("\(sharingIdentHashValue)").join(prefixHeader.basename + ".gch")
 
                 // Start by invoking our logic to create a task to precompile the prefix header.
-                let pchInfo = self.precompile(cbc, delegate, headerPath: prefixHeader, language: language, inputFileType: inputFileType, extraArgs: perFileFlags, precompPath: precompPath, clangInfo: clangInfo, additionalOrderingInputs: [orderingNode])
+                let pchInfo = self.precompile(cbc, delegate, headerPath: prefixHeader, language: language, inputFileType: inputFileType, extraArgs: perFileFlags, precompPath: precompPath, clangInfo: clangInfo, additionalOrderingInputs: [orderingNode], validityCriteria: validityCriteria)
 
                 // Return the output node for the precomp file.
                 return (delegate.createNode(precompPath), pchInfo)
@@ -1722,7 +1722,7 @@ public class ClangCompilerSpec : CompilerSpec, SpecIdentifierType, GCCCompatible
     }
 
     /// Specialized function that creates a task for precompiling a particular header.
-    private func precompile(_ cbc: CommandBuildContext, _ delegate: any TaskGenerationDelegate, headerPath: Path, language: GCCCompatibleLanguageDialect, inputFileType: FileTypeSpec, extraArgs: [String], precompPath: Path, clangInfo: DiscoveredClangToolSpecInfo?, additionalOrderingInputs: [any PlannedNode] = []) -> ClangPrefixInfo.PCHInfo {
+    private func precompile(_ cbc: CommandBuildContext, _ delegate: any TaskGenerationDelegate, headerPath: Path, language: GCCCompatibleLanguageDialect, inputFileType: FileTypeSpec, extraArgs: [String], precompPath: Path, clangInfo: DiscoveredClangToolSpecInfo?, additionalOrderingInputs: [any PlannedNode] = [], validityCriteria: (any TaskValidityCriteria)? = nil) -> ClangPrefixInfo.PCHInfo {
 
         // FIXME: Disabled for now because some projects manages to end up getting here with multiple files. <rdar://problem/23682348> Project groups multiple .c files together for C compiler?
         //let input = cbc.input
@@ -1837,7 +1837,7 @@ public class ClangCompilerSpec : CompilerSpec, SpecIdentifierType, GCCCompatible
         let extraInputs: [Path]
         if action != nil {
             let scanInputNodes: [any PlannedNode] = inputPaths.map(delegate.createNode) + additionalOrderingInputs
-            delegate.createTask(type: self, payload: payload, ruleInfo: ["ScanDependencies"] + ruleInfo.dropFirst(), additionalSignatureData: additionalSignatureData, commandLine: ["builtin-ScanDependencies", "-o", scanningOutput.str, "--"] + commandLine, additionalOutput: responseFileAdditionalOutput, environment: environmentBindings, workingDirectory: compilerWorkingDirectory(cbc), inputs: scanInputNodes, outputs: [delegate.createNode(scanningOutput)], action: delegate.taskActionCreationDelegate.createClangScanTaskAction(), execDescription: "Scan dependencies of \(headerPath.basename)", preparesForIndexing: true, enableSandboxing: enableSandboxing, additionalTaskOrderingOptions: [.compilationForIndexableSourceFile], usesExecutionInputs: usesExecutionInputs)
+            delegate.createTask(type: self, payload: payload, ruleInfo: ["ScanDependencies"] + ruleInfo.dropFirst(), additionalSignatureData: additionalSignatureData, commandLine: ["builtin-ScanDependencies", "-o", scanningOutput.str, "--"] + commandLine, additionalOutput: responseFileAdditionalOutput, environment: environmentBindings, workingDirectory: compilerWorkingDirectory(cbc), inputs: scanInputNodes, outputs: [delegate.createNode(scanningOutput)], action: delegate.taskActionCreationDelegate.createClangScanTaskAction(), execDescription: "Scan dependencies of \(headerPath.basename)", preparesForIndexing: true, enableSandboxing: enableSandboxing, additionalTaskOrderingOptions: [.compilationForIndexableSourceFile], usesExecutionInputs: usesExecutionInputs, validityCriteria: validityCriteria)
 
             extraInputs = [scanningOutput]
         } else {
@@ -1847,7 +1847,7 @@ public class ClangCompilerSpec : CompilerSpec, SpecIdentifierType, GCCCompatible
         // Finally, create the task.
         let execDescription = archSpecificExecutionDescription(cbc.scope.namespace.parseString("Precompile \(headerPath.basename)"), cbc, delegate)
         let allInputNodes: [any PlannedNode] = (inputPaths + extraInputs).map(delegate.createNode) + additionalOrderingInputs
-        delegate.createTask(type: self, dependencyData: dependencyData, payload: payload, ruleInfo: ruleInfo, additionalSignatureData: additionalSignatureData, commandLine: byteStringCommandLine, additionalOutput: additionalOutput, environment: environmentBindings, workingDirectory: compilerWorkingDirectory(cbc), inputs: allInputNodes, outputs: outputPaths.map(delegate.createNode), mustPrecede: [], action: action ?? delegate.taskActionCreationDelegate.createDeferredExecutionTaskActionIfRequested(userPreferences: cbc.producer.userPreferences), execDescription: execDescription, preparesForIndexing: false, enableSandboxing: enableSandboxing, llbuildControlDisabled: false, additionalTaskOrderingOptions: [], usesExecutionInputs: usesExecutionInputs, showEnvironment: true)
+        delegate.createTask(type: self, dependencyData: dependencyData, payload: payload, ruleInfo: ruleInfo, additionalSignatureData: additionalSignatureData, commandLine: byteStringCommandLine, additionalOutput: additionalOutput, environment: environmentBindings, workingDirectory: compilerWorkingDirectory(cbc), inputs: allInputNodes, outputs: outputPaths.map(delegate.createNode), mustPrecede: [], action: action ?? delegate.taskActionCreationDelegate.createDeferredExecutionTaskActionIfRequested(userPreferences: cbc.producer.userPreferences), execDescription: execDescription, preparesForIndexing: false, enableSandboxing: enableSandboxing, llbuildControlDisabled: false, additionalTaskOrderingOptions: [], usesExecutionInputs: usesExecutionInputs, showEnvironment: true, validityCriteria: validityCriteria)
 
         // If the object file verifier is enabled and we are building with explicit modules, also create a job to produce an adjacent PCH using implicit modules.
         if cbc.scope.evaluate(BuiltinMacros.CLANG_ENABLE_EXPLICIT_MODULES_OBJECT_FILE_VERIFIER) && action != nil {
@@ -1879,7 +1879,7 @@ public class ClangCompilerSpec : CompilerSpec, SpecIdentifierType, GCCCompatible
 
             let payload = ClangTaskPayload(serializedDiagnosticsPath: Path(diagnosticsFile), indexingPayload: nil, diagnosticAttachmentInfo: LibclangDiagnosticAttachmentInfo.attachmentInfo(scope: cbc.scope))
 
-            delegate.createTask(type: self, dependencyData: dependencyData, payload: payload, ruleInfo: ruleInfo + ["(implicit-copy)"], additionalSignatureData: additionalSignatureData, commandLine: updatedCommandLine.map{ ByteString(encodingAsUTF8: $0) }, additionalOutput: responseFileAdditionalOutput, environment: EnvironmentBindings(), workingDirectory: compilerWorkingDirectory(cbc), inputs: inputPaths + extraInputs, outputs: [ implicitModulesOutputNode.path ], action: delegate.taskActionCreationDelegate.createDeferredExecutionTaskActionIfRequested(userPreferences: cbc.producer.userPreferences), execDescription: resolveExecutionDescription(cbc, delegate), enableSandboxing: enableSandboxing, additionalTaskOrderingOptions: [.compilationForIndexableSourceFile], usesExecutionInputs: false)
+            delegate.createTask(type: self, dependencyData: dependencyData, payload: payload, ruleInfo: ruleInfo + ["(implicit-copy)"], additionalSignatureData: additionalSignatureData, commandLine: updatedCommandLine.map{ ByteString(encodingAsUTF8: $0) }, additionalOutput: responseFileAdditionalOutput, environment: EnvironmentBindings(), workingDirectory: compilerWorkingDirectory(cbc), inputs: inputPaths + extraInputs, outputs: [ implicitModulesOutputNode.path ], action: delegate.taskActionCreationDelegate.createDeferredExecutionTaskActionIfRequested(userPreferences: cbc.producer.userPreferences), execDescription: resolveExecutionDescription(cbc, delegate), enableSandboxing: enableSandboxing, additionalTaskOrderingOptions: [.compilationForIndexableSourceFile], usesExecutionInputs: false, validityCriteria: validityCriteria)
         }
 
         return ClangPrefixInfo.PCHInfo(

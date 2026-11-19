@@ -15,6 +15,7 @@ package import SWBCore
 import SWBMacro
 package import SWBProtocol
 import Foundation
+import Synchronization
 
 /// The `GlobalProductPlanDelegate` is a subset of the more ubiquitous `TaskPlanningDelegate` which provides functionality only needed by a `GlobalProductPlan`, even if it exists outside the context of a build.
 package protocol GlobalProductPlanDelegate: CoreClientTargetDiagnosticProducingDelegate {
@@ -42,10 +43,47 @@ package final class GlobalProductPlan: GlobalTargetInfoProvider
     /// transitive dependencies and so forth.
     private var impartedBuildPropertiesByTarget: [ConfiguredTarget: [SWBCore.ImpartedBuildProperties]]
 
-    /// The set of shared intermediate nodes that have been created, keyed by their sharing identifier.
+    /// The set of shared intermediate nodes that have been created, keyed by their sharing identifier and the target that asked for them.
     ///
     /// This is a limited mechanism for concurrent task construction processes to coordinate on the production of a shared node.
-    let sharedIntermediateNodes = Registry<String, (any PlannedNode, any Sendable)>()
+    let sharedIntermediateNodes = Registry<SharedIntermediateNodeKey, (any PlannedNode, any Sendable)>()
+
+    struct SharedIntermediateNodeKey: Hashable, Sendable {
+        let ident: String
+        let target: ConfiguredTarget?
+    }
+
+    /// For each sharing identifier, the targets that asked for the shared node.
+    let sharedIntermediateNodeOwners = Registry<String, SharedIntermediateNodeOwner>()
+
+    /// Chooses which of the targets that asked for a shared node keeps the tasks it planned for it: the one with the lowest GUID.
+    ///
+    /// Every target plans its own tasks for the node, so the choice doesn't depend on which target's producer ran first, and the shared tasks (their identifiers, command lines and inputs) are the same in every plan of the same build request.
+    final class SharedIntermediateNodeOwner: Sendable {
+        private let candidates = SWBMutex<Set<String>>([])
+
+        func addCandidate(_ target: ConfiguredTarget?) {
+            _ = candidates.withLock { $0.insert(Self.key(target)) }
+        }
+
+        func isOwner(_ target: ConfiguredTarget?) -> Bool {
+            candidates.withLock { $0.min() } == Self.key(target)
+        }
+
+        private static func key(_ target: ConfiguredTarget?) -> String {
+            target?.guid.stringValue ?? ""
+        }
+    }
+
+    /// Keeps a task planned for a shared node only if its target is the node's owner.
+    struct SharedIntermediateNodeOwnerValidityCriteria: TaskValidityCriteria {
+        let owner: SharedIntermediateNodeOwner
+        let target: ConfiguredTarget?
+
+        func isValid(_ task: any PlannedTask, _ context: any TaskValidationContext) -> Bool {
+            owner.isOwner(target)
+        }
+    }
 
     /// Tracks ordering dependencies for shared PCHs.
     final class SharedPCHOrdering: Sendable {
