@@ -179,7 +179,7 @@ private final class SourcesPhaseBasedTaskGenerationDelegate: TaskGenerationDeleg
         return delegate.clientDelegate
     }
 
-    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: () -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable) {
+    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: ((any TaskValidityCriteria)?) -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable) {
         return delegate.createOrReuseSharedNodeWithIdentifier(ident, creator: creator)
     }
 

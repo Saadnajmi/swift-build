@@ -841,9 +841,11 @@ public protocol TaskGenerationDelegate: AnyObject, TargetDiagnosticProducingDele
     var clientDelegate: any CoreClientDelegate { get }
 
     /// Looks up `key` in a concurrency-safe mapping associated with the product plan; if a node is associated with that key, it is simply returned; otherwise, the block is invoked to create a node, and then that node is returned after associating it with the key.  This is intended for shareable intermediate artifacts, such as header precompilation tasks, that are created the first time they are needed and that can then be referenced by any other case that needs the same intermediate node.
+    ///
+    /// The block is invoked once for each target that needs the node, and must pass the validity criteria it is given to every task it creates.  Those criteria keep the tasks of only one of those targets, chosen independently of the order in which the targets are planned, so that the shared tasks are the same from one plan to the next.
     /// FIXME: This is arguably a bit esoteric, but creating API that explicitly deals with precompiled headers seemed wrong here.  Rather, this is intended to be a way to provide generalized sharing of nodes that are created in quite specialized ways.
     /// FIXME: The name of this method is also a bit awkward.  We could probably do better.
-    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: () -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable)
+    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: (_ validityCriteria: (any TaskValidityCriteria)?) -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable)
 
     /// Register the current target as a consumer of the shared PCH.
     func registerSharedPCHOrderingDependency(_ ident: String, orderingNode: any PlannedNode)

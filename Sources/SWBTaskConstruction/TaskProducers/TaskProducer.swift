@@ -1868,8 +1868,14 @@ class ProducerBasedTaskGenerationDelegate: TaskGenerationDelegate {
 
     var clientDelegate: any CoreClientDelegate { return context.delegate.clientDelegate }
 
-    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: () -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable) {
-        return context.globalProductPlan.sharedIntermediateNodes.getOrInsert(ident, creator)
+    func createOrReuseSharedNodeWithIdentifier(_ ident: String, creator: ((any TaskValidityCriteria)?) -> (any PlannedNode, any Sendable)) -> (any PlannedNode, any Sendable) {
+        let globalProductPlan = context.globalProductPlan
+        let configuredTarget = context.configuredTarget
+        return globalProductPlan.sharedIntermediateNodes.getOrInsert(.init(ident: ident, target: configuredTarget)) {
+            let owner = globalProductPlan.sharedIntermediateNodeOwners.getOrInsert(ident) { GlobalProductPlan.SharedIntermediateNodeOwner() }
+            owner.addCandidate(configuredTarget)
+            return creator(GlobalProductPlan.SharedIntermediateNodeOwnerValidityCriteria(owner: owner, target: configuredTarget))
+        }
     }
 
     func registerSharedPCHOrderingDependency(_ ident: String, orderingNode: any PlannedNode) {

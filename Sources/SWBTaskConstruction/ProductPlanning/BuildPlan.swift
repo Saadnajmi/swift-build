@@ -80,6 +80,9 @@ package final class BuildPlan: StaleFileRemovalContext {
 
     package let emitFrontendCommandLines: Bool
 
+    /// Testing hook: when set, task producers generate their tasks one at a time, ordered by the position of their target's name in this list, so tests can reproduce a particular planning order.
+    @TaskLocal package static var taskGenerationOrderForTesting: [String]? = nil
+
     /// Create the build plan for a particular request.
     ///
     /// This will cause the actual construction of all of the product plans and tasks.
@@ -169,7 +172,19 @@ package final class BuildPlan: StaleFileRemovalContext {
                 }
             }
 
-            await producersToEvaluate.parallelForEach(group: &group, maximumParallelism: 100) { productPlanResultContext, producer in
+            var producersForTaskGeneration = producersToEvaluate
+            var maximumParallelism = 100
+            if let order = BuildPlan.taskGenerationOrderForTesting {
+                func rank(_ producer: any TaskProducer) -> Int {
+                    producer.context.configuredTarget.flatMap { order.firstIndex(of: $0.target.name) } ?? order.count
+                }
+                producersForTaskGeneration = producersToEvaluate.enumerated().sorted { lhs, rhs in
+                    (rank(lhs.element.producer), lhs.offset) < (rank(rhs.element.producer), rhs.offset)
+                }.map(\.element)
+                maximumParallelism = 1
+            }
+
+            await producersForTaskGeneration.parallelForEach(group: &group, maximumParallelism: maximumParallelism) { productPlanResultContext, producer in
                 progressContinuation.yield(())
                 if delegate.cancelled { return }
 
